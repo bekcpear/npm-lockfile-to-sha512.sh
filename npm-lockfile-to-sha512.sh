@@ -6,17 +6,25 @@
 set -e
 
 LOCK_FILE="${1:-package-lock.json}"
+DIFF_PATH="${2:-frontend/package-lock.json}"
 TMP_LOCK="/tmp/package-lock.json-$(uuidgen)"
 DISTDIR="/var/cache/distfiles"
+REPO_PATH="/home/ryan/Git/npm-lockfile-to-sha512.sh"
+DIFF_NAME="npm-lockfile-to-sha512.diff"
 
 #NPM_EBUILD=""
 #ebuild "${NPM_EBUILD}" fetch
 
-cp -f "${LOCK_FILE}" "${TMP_LOCK}"
+mkdir -p $(dirname "${TMP_LOCK}/${DIFF_PATH}")
+cp -f "${LOCK_FILE}" "${TMP_LOCK}/${DIFF_PATH}"
+pushd "${TMP_LOCK}" >/dev/null
+git init -q
+git add .
+git commit -q --no-gpg-sign -m 'diff'
 
 trap '
-if [[ -f "${TMP_LOCK}" ]]; then
-  rm "${TMP_LOCK}"
+if [[ -d "${TMP_LOCK}" ]]; then
+  rm -rf "${TMP_LOCK}"
 fi
 ' EXIT
 
@@ -47,7 +55,7 @@ while read json; do
   sha512im="sha512-$(openssl dgst -sha512 -binary ${distpath} | openssl base64 -A)"
   i=${i//\//\\\/}
   i=${i//+/\\+}
-  eval "sed -Ei '/^\s*\"integrity\":\s+\"${i}\",?$/s@${i}@${sha512im}@' ${TMP_LOCK}"
+  eval "sed -Ei '/^\s*\"integrity\":\s+\"${i}\",?$/s@${i}@${sha512im}@' ${TMP_LOCK}/${DIFF_PATH}"
 
   echo -en "\e[G\e[K seding .. ${_SYMBOL[${_SYMBOL_I}]} "
   if [[ ${_SYMBOL_I} == 3 ]]; then
@@ -55,13 +63,29 @@ while read json; do
   else
     _SYMBOL_I+=1
   fi
-done <<<$(jq -c '.packages[] | select(has("integrity")) | select(.integrity|test("^sha1-")) | { "r": .resolved, "i": .integrity }' "${LOCK_FILE}")
+done <<<$(jq -c '.packages[] | select(has("integrity")) | select(.integrity|test("^sha1-")) | { "r": .resolved, "i": .integrity }' "${TMP_LOCK}/${DIFF_PATH}")
 
 echo
 
-mv "${LOCK_FILE}" "${LOCK_FILE}.bak"
-mv "${TMP_LOCK}" "${LOCK_FILE}"
-
 PATCH_FILE="/tmp/package-lock-to-sha512-$(uuidgen).diff"
-git --no-pager diff --patch "${LOCK_FILE}" >${PATCH_FILE} && \
-  echo "Patch has been written to ${PATCH_FILE}"
+git --no-pager diff --patch "${TMP_LOCK}/${DIFF_PATH}" >${PATCH_FILE}
+if [[ $? == 0 ]]; then
+  read -p "Enter the tag name: " tagname
+  pushd "${REPO_PATH}"
+  if git rev-parse diff &>/dev/null; then
+    git checkout diff
+  else
+    git checkout --orphan diff
+    git rm -rf .
+  fi
+  if ! ls -1 | grep -v "${DIFF_NAME}"; then
+    cp "${PATCH_FILE}" ./"${DIFF_NAME}"
+    git add ./"${DIFF_NAME}"
+    git commit -m "update ${DIFF_NAME}"
+    git tag -a ${tagname} -m "new tag: ${tagname}"
+    #git push --tags
+    rm "${PATCH_FILE}"
+  else
+    echo "error!" >&2
+  fi
+fi
